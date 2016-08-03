@@ -1,0 +1,7 @@
+name "vibe-sdlang"
+description "SDLang serialization support for vibe.d"
+authors "Sönke Ludwig"
+copyright "Copyright © 2016, Sönke Ludwig"
+license "mit"
+dependency "vibe-d:data" version="~>0.7.29"
+dependency "sdlang-d" version="~>0.9.5"
