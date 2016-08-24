@@ -4,13 +4,16 @@ module vibe.data.sdl;
 
 import vibe.data.serialization;
 import sdlang;
-import std.traits : Unqual, ValueType, isNumeric, isBoolean, isArray, isAssociativeArray;
 import std.datetime : Date, DateTime, SysTime, TimeOfDay, UTC;
+import std.meta : allSatisfy, staticIndexOf;
+import std.traits : Unqual, ValueType, hasUDA, isNumeric, isBoolean, isArray, isAssociativeArray;
 import core.time : Duration, days, hours, seconds;
 
 
 ///
 unittest {
+	import std.conv : to;
+
 	static struct S {
 		bool b;
 		int i;
@@ -49,23 +52,30 @@ unittest {
 
 ///
 unittest {
+	static struct U {
+		@sdlAttribute int att1;
+		string content1;
+	}
+
 	static struct T {
-		/*@sdlAttribute*/ int att1;
-		/*@sdlAttribute*/ string att2;
-		/*@sdlValue*/ string content1;
+		@sdlAttribute int att1;
+		@sdlAttribute string att2;
+		@sdlValue string content;
 	}
 
 	static struct S {
 		string[string] dict;
-		T[] arr;
-		//@sdlSingle T[] arr2;
+		U[] arr;
+		T[] arr1;
+		@sdlSingle T[] arr2;
 		int[] iarr;
 	}
 
 	S s = {
 		dict : ["a": "foo", "b": "bar"],
-		arr : [T(1, "a", "x"), T(2, "b", "y")],
-	//	arr2 : [T(1, "a", "x"), T(2, "b", "y")],
+		arr : [U(1, "x"), U(2, "y")],
+		arr1 : [T(1, "a", "x"), T(2, "b", "y")],
+		arr2 : [T(1, "a", "x"), T(2, "b", "y")],
 		iarr : [1, 2, 3]
 	};
 
@@ -76,22 +86,25 @@ unittest {
 	"a" "foo"
 }
 arr {
-	entry {
-		att1 1
-		att2 "a"
+	entry att1=1 {
 		content1 "x"
 	}
-	entry {
-		att1 2
-		att2 "b"
+	entry att1=2 {
 		content1 "y"
 	}
 }
+arr1 {
+	entry "x" att1=1 att2="a"
+	entry "y" att1=2 att2="b"
+}
+arr2 "x" att1=1 att2="a"
+arr2 "y" att1=2 att2="b"
 iarr 1 2 3
 `, res.toSDLDocument());
 
 	S t = deserialize!(SDLangSerializer, S)(res);
-	assert(s == t);
+	import std.conv : to;
+	assert(s == t, t.to!string);
 }
 
 Tag serializeSDLang(T)(T value)
@@ -130,6 +143,7 @@ struct SDLangSerializer {
 		Loc loc;
 		size_t valIdx;
 		bool hasIdentKeys, isArrayEntry;
+		string singleArrayName;
 	}
 
 	private {
@@ -145,35 +159,72 @@ struct SDLangSerializer {
 	//
 	Tag getSerializedResult() { return m_stack[0].tag; }
 
-	void beginWriteDictionary(T)() if (isValueDictionary!T) { current.hasIdentKeys = false; }
-	void endWriteDictionary(T)()  if (isValueDictionary!T) {}
-	void beginWriteDictionary(T)() if (!isValueDictionary!T) { current.hasIdentKeys = !isAssociativeArray!T; }
-	void endWriteDictionary(T)()  if (!isValueDictionary!T) {}
-	void beginWriteDictionaryEntry(T)(string name) {
-		if (current.hasIdentKeys) pushTag(name);
-		else pushTag(null, Value(name));
-		current.loc = isSDLBasicType!T ? Loc.values : Loc.subNodes;
+	void beginWriteDictionary(Traits)()
+	{
+		current.hasIdentKeys = !isAssociativeArray!(Traits.Type);
 	}
-	void endWriteDictionaryEntry(T)(string name) { pop(); }
+	void endWriteDictionary(Traits)() {}
+	void beginWriteDictionaryEntry(ElementTraits)(string name) {
+		assert(m_stack.length > 0);
+		assert(isAssociativeArray!(ElementTraits.ContainerType) || name.length > 0);
+		static if (staticIndexOf!(sdlSingle, ElementTraits.Attributes) >= 0) {
+			current.singleArrayName = name;
+			current.loc = Loc.subNodes;
+		} else static if (isSDLBasicType!(ElementTraits.Type) && staticIndexOf!(sdlAttribute, ElementTraits.Attributes) >= 0) {
+			current.attribute = new Attribute(null, name, Value(null));
+			current.tag.add(current.attribute);
+			current.loc = Loc.attribute;
+		} else static if (isSDLBasicType!(ElementTraits.Type) && staticIndexOf!(sdlValue, ElementTraits.Attributes) >= 0) {
+			current.loc = Loc.values;
+		} else {
+			if (current.hasIdentKeys) pushTag(name);
+			else pushTag(null, Value(name));
+			current.singleArrayName = "entry";
+			current.loc = Loc.values;
+		}
+	}
+	void endWriteDictionaryEntry(ElementTraits)(string name) {
+		static if (staticIndexOf!(sdlSingle, ElementTraits.Attributes) >= 0) {}
+		else static if (isSDLBasicType!(ElementTraits.Type) && staticIndexOf!(sdlAttribute, ElementTraits.Attributes) >= 0) {}
+		else pop();
+	}
 
 
-	void beginWriteArray(T)(size_t) if (isValueArray!T) { current.loc = Loc.values; }
-	void endWriteArray(T)() if (isValueArray!T) {}
-	void beginWriteArray(T)(size_t) if (!isValueArray!T) { current.loc = Loc.subNodes; }
-	void endWriteArray(T)() if (!isValueArray!T) {}
-	void beginWriteArrayEntry(T)(size_t)
+	void beginWriteArray(Traits)(size_t)
+		if (isValueArray!(Traits.Type))
+	{
+		current.loc = Loc.values;
+	}
+	void endWriteArray(Traits)() if (isValueArray!(Traits.Type)) {}
+	void beginWriteArray(Traits)(size_t) if (!isValueArray!(Traits.Type))
+	{
+		current.loc = Loc.subNodes;
+	}
+	void endWriteArray(Traits)() if (!isValueArray!(Traits.Type)) {}
+	void beginWriteArrayEntry(ElementTraits)(size_t idx)
 	{
 		if (current.loc == Loc.subNodes) {
-			pushTag("entry");
+			static if (staticIndexOf!(sdlSingle, ElementTraits.ContainerAttributes) >= 0) {
+				if (idx > 0 && m_stack.length > 1) {
+					auto name = current.tag.name;
+					assert(name.length > 0);
+					pop();
+					pushTag(name);
+					return;
+				}
+			}
+
+			assert(current.singleArrayName.length > 0);
+			pushTag(current.singleArrayName);
 			current.isArrayEntry = true;
 		}
 	}
-	void endWriteArrayEntry(T)(size_t)
+	void endWriteArrayEntry(ElementTraits)(size_t)
 	{
 		if (current.isArrayEntry) pop();
 	}
 
-	void writeValue(T)(in T value)
+	void writeValue(Traits, T)(in T value)
 		if (!is(T == Tag))
 	{
 		static if (isSDLSerializable!T) writeValue(value.toSDL());
@@ -186,6 +237,7 @@ struct SDLangSerializer {
 				else uval = value.dup;
 				val = uval;
 			}
+			
 			final switch (current.loc) {
 				case Loc.attribute: current.attribute.value = val; break;
 				case Loc.values: current.tag.add(val); break;
@@ -194,27 +246,36 @@ struct SDLangSerializer {
 		}
 	}
 
-	void writeValue(T)(Tag value) if (is(T == Tag)) { currentTag = value; }
-	void writeValue(T)(in Json Tag) if (is(T == Tag)) { currentTag = value.clone; }
+	void writeValue(Traits, T)(Tag value) if (is(T == Tag)) { current.tag.add(value); }
+	void writeValue(Traits, T)(in Json Tag) if (is(T == Tag)) { current.tag.add(value.clone); }
 
 	//
 	// deserialization
 	//
-	void readDictionary(T)(scope void delegate(string) field_handler)
-		if (isValueDictionary!T)
+	void readDictionary(Traits)(scope void delegate(string) field_handler)
+		if (isAssociativeArray!(Traits.Type))
 	{
 		foreach (st; current.tag.tags) {
 			pushTag(st);
-			current.loc = Loc.values;
 			current.valIdx = 1;
-			field_handler(st.values[0].get!string);
+			current.loc = Loc.values;
+			auto n = st.values[0].get!string;
+			field_handler(n);
 			pop();
 		}
 	}
 
-	void readDictionary(T)(scope void delegate(string) field_handler)
-		if (!isValueDictionary!T)
+	void readDictionary(Traits)(scope void delegate(string) field_handler)
+		if (!isAssociativeArray!(Traits.Type))
 	{
+		import std.meta : AliasSeq;
+		import std.traits : FieldNameTuple, hasUDA;
+		foreach (att; current.tag.attributes) {
+			current.loc = Loc.attribute;
+			current.attribute = att;
+			field_handler(att.name);
+		}
+		size_t first_idx = 0; // FIXME: 1 for non-ident keys
 		foreach (st; current.tag.tags) {
 			pushTag(st);
 			current.loc = Loc.values;
@@ -222,10 +283,48 @@ struct SDLangSerializer {
 			field_handler(st.name);
 			pop();
 		}
+		static if (is(Traits.Type == struct) || is(Traits.Type == class)) {
+			current.valIdx = 0;
+			foreach (fname; FieldNameTuple!(Traits.Type)) {
+				alias F = AliasSeq!(__traits(getMember, Traits.Type, fname));
+				static if (hasUDA!(F[0], sdlValue)) {
+					current.loc = Loc.values;
+					if (current.valIdx >= current.tag.values.length) {
+						import std.format : format;
+						throw new Exception(format("Line %s: Missing value number %s (%s) for '%s'.", current.tag.location.line+1, current.valIdx+1, fname, current.tag.name)); // TODO: show line number
+					}
+
+					field_handler(__traits(identifier, F[0]));
+					current.valIdx++;
+				}
+			}
+		}
 	}
 
-	void readArray(T)(scope void delegate(size_t) size_callback, scope void delegate() entry_callback)
-		if (isValueArray!T)
+	void beginReadDictionaryEntry(Traits)(string name)
+	{
+	}
+
+	void endReadDictionaryEntry(Traits)(string name)
+	{
+	}
+
+	void readArray(Traits)(scope void delegate(size_t) size_callback, scope void delegate() entry_callback)
+		if (staticIndexOf!(sdlSingle, Traits.Attributes) >= 0)
+	{
+		// FIXME: ensure that this is only called once and not for each array entry tag
+		auto name = current.tag.name;
+		foreach (t; current.tag.parent.tags) {
+			if (t.name == name) {
+				pushTag(t);
+				entry_callback();
+				pop();
+			}
+		}
+	}
+
+	void readArray(Traits)(scope void delegate(size_t) size_callback, scope void delegate() entry_callback)
+		if (staticIndexOf!(sdlSingle, Traits.Attributes) < 0 && isValueArray!(Traits.Type))
 	{
 		current.loc = Loc.values;
 		current.valIdx = 0;
@@ -236,8 +335,8 @@ struct SDLangSerializer {
 		}
 	}
 
-	void readArray(T)(scope void delegate(size_t) size_callback, scope void delegate() entry_callback)
-		if (!isValueArray!T)
+	void readArray(Traits)(scope void delegate(size_t) size_callback, scope void delegate() entry_callback)
+		if (staticIndexOf!(sdlSingle, Traits.Attributes) < 0 && !isValueArray!(Traits.Type))
 	{
 		size_callback(current.tag.tags.length);
 		foreach (st; current.tag.tags) {
@@ -247,8 +346,16 @@ struct SDLangSerializer {
 		}
 	}
 
-	T readValue(T)() { return getCurrentValue().get!T; }
-	bool tryReadNull() { return !getCurrentValue.hasValue(); }
+	void beginReadArrayEntry(Traits)(size_t idx)
+	{
+	}
+
+	void endReadArrayEntry(Traits)(size_t idx)
+	{
+	}
+
+	T readValue(Traits, T)() { return getCurrentValue().get!T; }
+	bool tryReadNull(Traits)() { return !getCurrentValue.hasValue(); }
 
 	private @property ref inout(StackEntry) current() inout { return m_stack[$-1]; }
 
@@ -274,6 +381,7 @@ struct SDLangSerializer {
 
 	private void pop()
 	{
+		assert(m_stack.length > 1, "Popping last element!?");
 		m_stack.length--;
 		m_stack.assumeSafeAppend();
 	}
@@ -291,6 +399,8 @@ struct SDLangSerializer {
 	private template isValueDictionary(T) {
 		static if (isAssociativeArray!T)
 			enum isValueDictionary = isSDLBasicType!(ValueType!T);
+		else static if (is(T == struct) || is(T == class))
+			enum isValueDictionary = anySatisfy!(isValueField, T.tupleof) && allSatisfy!(isValueOrAttributeField, T.tupleof);
 		else enum isValueDictionary = false;
 	}
 
@@ -302,6 +412,9 @@ struct SDLangSerializer {
 }
 
 enum isSDLSerializable(T) = is(typeof(T.init.toSDL()) == Tag) && is(typeof(T.fromSDL(new Tag())) == T);
+enum isValueField(alias F) = hasUDA!(F, sdlValue);
+enum isValueOrAttributeField(alias F) = hasUDA!(F, sdlValue) || hasUDA!(F, sdlAttribute);
 
 struct sdlAttribute {}
 struct sdlSingle {}
+struct sdlValue {}
