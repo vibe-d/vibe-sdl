@@ -167,14 +167,14 @@ struct SDLangSerializer {
 	void beginWriteDictionaryEntry(ElementTraits)(string name) {
 		assert(m_stack.length > 0);
 		assert(isAssociativeArray!(ElementTraits.ContainerType) || name.length > 0);
-		static if (staticIndexOf!(sdlSingle, ElementTraits.Attributes) >= 0) {
+		static if (containsValue!(SDLSingleAttribute, ElementTraits.Attributes)) {
 			current.singleArrayName = name;
 			current.loc = Loc.subNodes;
-		} else static if (isSDLBasicType!(ElementTraits.Type) && staticIndexOf!(sdlAttribute, ElementTraits.Attributes) >= 0) {
+		} else static if (isSDLBasicType!(ElementTraits.Type) && containsValue!(SDLAttributeAttribute, ElementTraits.Attributes)) {
 			current.attribute = new Attribute(null, name, Value(null));
 			current.tag.add(current.attribute);
 			current.loc = Loc.attribute;
-		} else static if (isSDLBasicType!(ElementTraits.Type) && staticIndexOf!(sdlValue, ElementTraits.Attributes) >= 0) {
+		} else static if (isSDLBasicType!(ElementTraits.Type) && containsValue!(SDLValueAttribute, ElementTraits.Attributes)) {
 			current.loc = Loc.values;
 		} else {
 			if (current.hasIdentKeys) pushTag(name);
@@ -184,8 +184,9 @@ struct SDLangSerializer {
 		}
 	}
 	void endWriteDictionaryEntry(ElementTraits)(string name) {
-		static if (staticIndexOf!(sdlSingle, ElementTraits.Attributes) >= 0) {}
-		else static if (isSDLBasicType!(ElementTraits.Type) && staticIndexOf!(sdlAttribute, ElementTraits.Attributes) >= 0) {}
+		static if (containsValue!(SDLSingleAttribute, ElementTraits.Attributes)) {}
+		else static if (isSDLBasicType!(ElementTraits.Type) && containsValue!(SDLAttributeAttribute, ElementTraits.Attributes)) {}
+		else static if (isSDLBasicType!(ElementTraits.Type) && containsValue!(SDLValueAttribute, ElementTraits.Attributes)) {}
 		else pop();
 	}
 
@@ -204,7 +205,7 @@ struct SDLangSerializer {
 	void beginWriteArrayEntry(ElementTraits)(size_t idx)
 	{
 		if (current.loc == Loc.subNodes) {
-			static if (staticIndexOf!(sdlSingle, ElementTraits.ContainerAttributes) >= 0) {
+			static if (containsValue!(SDLSingleAttribute, ElementTraits.ContainerAttributes)) {
 				if (idx > 0 && m_stack.length > 1) {
 					auto name = current.tag.name;
 					assert(name.length > 0);
@@ -287,7 +288,7 @@ struct SDLangSerializer {
 			current.valIdx = 0;
 			foreach (fname; FieldNameTuple!(Traits.Type)) {
 				alias F = AliasSeq!(__traits(getMember, Traits.Type, fname));
-				static if (hasUDA!(F[0], sdlValue)) {
+				static if (hasUDAValue!(F[0], SDLValueAttribute)) {
 					current.loc = Loc.values;
 					if (current.valIdx >= current.tag.values.length) {
 						import std.format : format;
@@ -310,7 +311,7 @@ struct SDLangSerializer {
 	}
 
 	void readArray(Traits)(scope void delegate(size_t) size_callback, scope void delegate() entry_callback)
-		if (staticIndexOf!(sdlSingle, Traits.Attributes) >= 0)
+		if (containsValue!(SDLSingleAttribute, Traits.Attributes))
 	{
 		// FIXME: ensure that this is only called once and not for each array entry tag
 		auto name = current.tag.name;
@@ -324,7 +325,7 @@ struct SDLangSerializer {
 	}
 
 	void readArray(Traits)(scope void delegate(size_t) size_callback, scope void delegate() entry_callback)
-		if (staticIndexOf!(sdlSingle, Traits.Attributes) < 0 && isValueArray!(Traits.Type))
+		if (!containsValue!(SDLSingleAttribute, Traits.Attributes) && isValueArray!(Traits.Type))
 	{
 		current.loc = Loc.values;
 		current.valIdx = 0;
@@ -336,7 +337,7 @@ struct SDLangSerializer {
 	}
 
 	void readArray(Traits)(scope void delegate(size_t) size_callback, scope void delegate() entry_callback)
-		if (staticIndexOf!(sdlSingle, Traits.Attributes) < 0 && !isValueArray!(Traits.Type))
+		if (!containsValue!(SDLSingleAttribute, Traits.Attributes) && !isValueArray!(Traits.Type))
 	{
 		size_callback(current.tag.tags.length);
 		foreach (st; current.tag.tags) {
@@ -411,10 +412,122 @@ struct SDLangSerializer {
 	}
 }
 
-enum isSDLSerializable(T) = is(typeof(T.init.toSDL()) == Tag) && is(typeof(T.fromSDL(new Tag())) == T);
-enum isValueField(alias F) = hasUDA!(F, sdlValue);
-enum isValueOrAttributeField(alias F) = hasUDA!(F, sdlValue) || hasUDA!(F, sdlAttribute);
+/** Forces a value to be serialized as an SDL attribute.
 
-struct sdlAttribute {}
-struct sdlSingle {}
-struct sdlValue {}
+	This can be applied to plain values in aggregate members and will cause
+	the vaule to be seriailzed as an attribute of the parent tag instead of
+	as a child tag.
+*/
+@property SDLAttributeAttribute sdlAttribute() { return SDLAttributeAttribute.init; }
+
+///
+unittest {
+	struct S {
+		int foo;
+		@sdlAttribute int bar;
+	}
+
+	struct T {
+		S s;
+	}
+
+	assert(
+		serializeSDLang(T(S(1, 2))).toSDLDocument() ==
+		"s bar=2 {\n" ~
+		"\tfoo 1\n" ~
+		"}\n"
+	);
+}
+
+
+/** Forces a value to be serialized as an SDL value.
+
+	This can be applied to plain values in aggregate members and will cause
+	the vaule to be seriailzed as a value of the parent tag instead of
+	as a child tag.
+*/
+@property SDLValueAttribute sdlValue() { return SDLValueAttribute.init; }
+
+///
+unittest {
+	struct S {
+		int foo;
+		@sdlValue int bar;
+	}
+
+	struct T {
+		S s;
+	}
+
+	assert(
+		serializeSDLang(T(S(1, 2))).toSDLDocument() ==
+		"s 2 {\n" ~
+		"\tfoo 1\n" ~
+		"}\n"
+	);
+}
+
+
+/** Causes an array to be serialized as a plain sequence of entry tags instead
+	of wrapping them in a separate parent tag.
+*/
+@property SDLSingleAttribute sdlSingle() { return SDLSingleAttribute.init; }
+
+///
+unittest {
+	struct S {
+		@sdlAttribute int foo;
+		@sdlAttribute int bar;
+	}
+
+	struct T {
+		S[] arr1;
+		@sdlSingle S[] arr2;
+	}
+
+	assert(
+		serializeSDLang(T([S(1, 2), S(3, 4)], [S(5, 6), S(7, 8)])).toSDLDocument() ==
+		"arr1 {\n" ~
+		"\tentry foo=1 bar=2\n" ~
+		"\tentry foo=3 bar=4\n" ~
+		"}\n" ~
+		"arr2 foo=5 bar=6\n" ~
+		"arr2 foo=7 bar=8\n"
+	);
+}
+
+enum isSDLSerializable(T) = is(typeof(T.init.toSDL()) == Tag) && is(typeof(T.fromSDL(new Tag())) == T);
+enum isValueField(alias F) = hasUDAValue!(F, SDLValueAttribute);
+enum isValueOrAttributeField(alias F) = hasUDAValue!(F, SDLValueAttribute) || hasUDAValue!(F, SDLAttributeAttribute);
+
+/// private
+private struct SDLAttributeAttribute {}
+/// private
+private struct SDLSingleAttribute {}
+/// private
+private struct SDLValueAttribute {}
+
+private enum hasUDAValue(alias DECL, T) = containsValue!(T, __traits(getAttributes, DECL));
+private template containsValue(T, V...) {
+	static if (V.length > 0)
+		enum containsValue = is(typeof(V[0]) == T) || containsValue!(T, V[1 .. $]);
+	else enum containsValue = false;
+}
+
+unittest {
+	struct S {
+		@sdlSingle int single;
+		@sdlValue int value;
+		@sdlAttribute int attribute;
+	}
+
+	static assert(hasUDAValue!(S.single, SDLSingleAttribute));
+	static assert(!hasUDAValue!(S.single, SDLValueAttribute));
+	static assert(!hasUDAValue!(S.single, SDLAttributeAttribute));
+	static assert(!hasUDAValue!(S.value, SDLSingleAttribute));
+	static assert(hasUDAValue!(S.value, SDLValueAttribute));
+	static assert(!hasUDAValue!(S.value, SDLAttributeAttribute));
+	static assert(!hasUDAValue!(S.attribute, SDLSingleAttribute));
+	static assert(!hasUDAValue!(S.attribute, SDLValueAttribute));
+	static assert(hasUDAValue!(S.attribute, SDLAttributeAttribute));
+}
