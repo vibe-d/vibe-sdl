@@ -107,14 +107,18 @@ iarr 1 2 3
 	assert(s == t, t.to!string);
 }
 
-Tag serializeSDLang(T)(T value)
+/** Serializes a value as an SDLang document.
+*/
+Tag serializeSDLang(T, alias Policy = DefaultPolicy)(T value)
 {
-	return serialize!SDLangSerializer(value, new Tag(null, null));
+	return serializeWithPolicy!(SDLangSerializer, Policy)(value, new Tag(null, null));
 }
 
-T deserializeSDLang(T)(Tag sdl)
+/** Deseriailzes a value from an SDLang document.
+*/
+T deserializeSDLang(T, alias Policy = DefaultPolicy)(Tag sdl)
 {
-	return deserialize!(SDLangSerializer, T)(sdl);
+	return deserializeWithPolicy!(SDLangSerializer, Policy, T)(sdl);
 }
 
 
