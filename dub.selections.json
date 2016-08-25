@@ -1,8 +1,0 @@
-{
-	"fileVersion": 1,
-	"versions": {
-		"libinputvisitor": "1.2.0",
-		"sdlang-d": "0.9.5",
-		"vibe-d": "0.7.30-alpha.4+commit.9.g0bc7618"
-	}
-}
