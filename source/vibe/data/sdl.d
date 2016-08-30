@@ -232,6 +232,8 @@ struct SDLangSerializer {
 	void writeValue(Traits, T)(in T value)
 		if (!is(T == Tag))
 	{
+		import std.traits : isIntegral;
+
 		static if (isSDLSerializable!T) writeValue(value.toSDL());
 		else {
 			Value val;
@@ -240,7 +242,10 @@ struct SDLangSerializer {
 				Unqual!T uval;
 				static if (is(typeof(uval = value))) uval = value;
 				else uval = value.dup;
-				val = uval;
+				static if (isIntegral!T) {
+					static if (T.sizeof <= int.sizeof) val = cast(int)uval;
+					else val = uval;
+				} else val = uval;
 			}
 			
 			final switch (current.loc) {
@@ -359,8 +364,24 @@ struct SDLangSerializer {
 	{
 	}
 
-	T readValue(Traits, T)() { return getCurrentValue().get!T; }
-	bool tryReadNull(Traits)() { return !getCurrentValue.hasValue(); }
+	T readValue(Traits, T)()
+	{
+		import std.conv : to;
+		import std.traits : isIntegral;
+
+		auto val = getCurrentValue();
+		static if (isIntegral!T) {
+			static if (T.sizeof <= int.sizeof) return val.get!int.to!T;
+			else return val.get!long;
+		} else return val.get!T;
+	}
+
+	bool tryReadNull(Traits)()
+	{
+		auto val = getCurrentValue();
+		if (!val.hasValue) return false;
+		return val.peek!(typeof(null)) !is null;
+	}
 
 	private @property ref inout(StackEntry) current() inout { return m_stack[$-1]; }
 
@@ -396,8 +417,14 @@ struct SDLangSerializer {
 	{
 		final switch (current.loc) {
 			case Loc.attribute: return current.attribute.value;
-			case Loc.values: return current.tag.values[current.valIdx];
-			case Loc.subNodes: return current.tag.values[0];
+			case Loc.values:
+				if (current.valIdx < current.tag.values.length)
+					return current.tag.values[current.valIdx];
+				return Value.init;
+			case Loc.subNodes:
+				if (current.tag.values.length > 0)
+					return current.tag.values[0];
+				return Value.init;
 		}
 	}
 
@@ -534,4 +561,18 @@ unittest {
 	static assert(!hasUDAValue!(S.attribute, SDLSingleAttribute));
 	static assert(!hasUDAValue!(S.attribute, SDLValueAttribute));
 	static assert(hasUDAValue!(S.attribute, SDLAttributeAttribute));
+}
+
+unittest {
+	struct S {
+		short s;
+		long l;
+		int i;
+		float f;
+		double d;
+	}
+	auto s = S(-30000, -80000000000, -2000000000, 0.5f, 0.5);
+	Tag serialized = s.serializeSDLang();
+	assert(serialized.toSDLDocument() == "s -30000\nl -80000000000L\ni -2000000000\nf 0.5F\nd 0.5D\n", serialized.toSDLDocument());
+	assert(serialized.deserializeSDLang!S() == s);
 }
