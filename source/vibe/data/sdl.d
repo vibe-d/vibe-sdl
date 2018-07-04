@@ -124,6 +124,7 @@ T deserializeSDLang(T, alias Policy = DefaultPolicy)(Tag sdl)
 
 ///
 struct SDLangSerializer {
+@trusted:
 	enum isSDLBasicType(T) =
 		isNumeric!T ||
 		isBoolean!T ||
@@ -182,7 +183,7 @@ struct SDLangSerializer {
 			current.loc = Loc.values;
 		} else {
 			if (current.hasIdentKeys) pushTag(name);
-			else pushTag(null, Value(name));
+			else pushTag(null, () @trusted { return Value(name); } ());
 			current.singleArrayName = "entry";
 			current.loc = Loc.values;
 		}
@@ -229,7 +230,7 @@ struct SDLangSerializer {
 		if (current.isArrayEntry) pop();
 	}
 
-	void writeValue(Traits, T)(in T value)
+	 void writeValue(Traits, T)(in T value) @trusted
 		if (!is(T == Tag))
 	{
 		import std.traits : isIntegral;
@@ -262,7 +263,7 @@ struct SDLangSerializer {
 	//
 	// deserialization
 	//
-	void readDictionary(Traits)(scope void delegate(string) field_handler)
+	void readDictionary(Traits)(scope void delegate(string) @safe field_handler)
 		if (isAssociativeArray!(Traits.Type))
 	{
 		foreach (st; current.tag.tags) {
@@ -275,7 +276,7 @@ struct SDLangSerializer {
 		}
 	}
 
-	void readDictionary(Traits)(scope void delegate(string) field_handler)
+	void readDictionary(Traits)(scope void delegate(string) @safe field_handler)
 		if (!isAssociativeArray!(Traits.Type))
 	{
 		import std.meta : AliasSeq;
