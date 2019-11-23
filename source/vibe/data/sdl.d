@@ -3,6 +3,7 @@
 module vibe.data.sdl;
 
 import vibe.data.serialization;
+import vibe.data.json;
 import sdlang;
 import std.datetime : Date, DateTime, SysTime, TimeOfDay, UTC;
 import std.meta : allSatisfy, staticIndexOf;
